@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Organizador de Imágenes a PDF</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        /* Fuentes */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // Componente principal de la aplicación
+        function App() {
+          const [images, setImages] = React.useState([]); // Estado para almacenar las imágenes cargadas
+          const [draggingIndex, setDraggingIndex] = React.useState(null); // Índice de la imagen que se está arrastrando
+          const [isJsPdfLoaded, setIsJsPdfLoaded] = React.useState(false); // Estado para verificar si jsPDF ha sido cargado
+          const fileInputRef = React.useRef(null); // Referencia para el input de archivo
+
+          // Estados para la vista previa de la imagen
+          const [selectedImage, setSelectedImage] = React.useState(null); // La imagen objeto que se está previsualizando/editando
+          const [currentRotation, setCurrentRotation] = React.useState(0); // Rotación en grados (0, 90, 180, 270)
+          const [currentScale, setCurrentScale] = React.useState(1); // Factor de escala (0.1 a 1.0)
+          const previewCanvasRef = React.useRef(null); // Ref para el canvas de vista previa
+
+          // Efecto para cargar la librería jsPDF dinámicamente
+          React.useEffect(() => {
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+            script.async = true; // Cargar de forma asíncrona
+            script.onload = () => {
+              // Verificar explícitamente si jsPDF está disponible en el objeto window
+              if (typeof window.jspdf !== 'undefined' || typeof window.jsPDF !== 'undefined') { // jsPDF puede estar en window.jspdf o window.jsPDF
+                setIsJsPdfLoaded(true); // Una vez que el script se carga y jsPDF está disponible, actualiza el estado
+                console.log('jsPDF ha sido cargado y está disponible.');
+              } else {
+                console.error('jsPDF script cargado, pero la librería no está disponible en window.jspdf o window.jsPDF.');
+              }
+            };
+            script.onerror = () => {
+              console.error('Error al cargar jsPDF.');
+            };
+            document.body.appendChild(script);
+
+            // Función de limpieza para remover el script cuando el componente se desmonte
+            return () => {
+              document.body.removeChild(script);
+            };
+          }, []); // Se ejecuta solo una vez al montar el componente
+
+          // Función para manejar la carga de imágenes
+          const handleImageUpload = (event) => {
+            const files = Array.from(event.target.files);
+            const newImages = [];
+
+            files.forEach((file) => {
+              if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                  newImages.push({
+                    id: URL.createObjectURL(file), // Usar URL.createObjectURL para una URL de objeto temporal
+                    src: e.target.result, // Contenido base64 de la imagen
+                    name: file.name, // Nombre del archivo
+                    rotation: 0, // Rotación predeterminada
+                    scale: 1,    // Escala predeterminada
+                  });
+                  // Actualizar el estado solo después de que todas las imágenes se hayan cargado
+                  if (newImages.length === files.length) {
+                    setImages((prevImages) => [...prevImages, ...newImages]);
+                  }
+                };
+                reader.readAsDataURL(file); // Leer el archivo como una URL de datos (base64)
+              } else {
+                console.warn(`Archivo no compatible: ${file.name}. Solo se permiten imágenes.`);
+              }
+            });
+          };
+
+          // Funciones para el arrastrar y soltar (Drag and Drop)
+          const handleDragStart = (index) => {
+            setDraggingIndex(index);
+          };
+
+          const handleDragEnter = (index) => {
+            if (draggingIndex === null || draggingIndex === index) return;
+
+            const newImages = [...images];
+            const draggedImage = newImages[draggingIndex];
+
+            // Eliminar la imagen arrastrada de su posición original
+            newImages.splice(draggingIndex, 1);
+            // Insertar la imagen arrastrada en la nueva posición
+            newImages.splice(index, 0, draggedImage);
+
+            setImages(newImages);
+            setDraggingIndex(index); // Actualizar el índice de arrastre para reflejar la nueva posición
+          };
+
+          const handleDragEnd = () => {
+            setDraggingIndex(null); // Resetear el índice de arrastre
+          };
+
+          // Función para eliminar una imagen
+          const handleRemoveImage = (idToRemove) => {
+            setImages((prevImages) => prevImages.filter((img) => img.id !== idToRemove));
+          };
+
+          // Función para ordenar automáticamente las imágenes por nombre
+          const handleSortAutomatically = () => {
+            setImages((prevImages) =>
+              [...prevImages].sort((a, b) => a.name.localeCompare(b.name))
+            );
+          };
+
+          // --- Funciones para la vista previa y manipulación de imágenes ---
+          const openImagePreview = (image) => {
+            setSelectedImage(image);
+            setCurrentRotation(image.rotation || 0); // Inicializar con rotación existente
+            setCurrentScale(image.scale || 1);     // Inicializar con escala existente
+          };
+
+          const closeImagePreview = () => {
+            setSelectedImage(null);
+          };
+
+          const applyImageChanges = () => {
+            if (!selectedImage || !previewCanvasRef.current) return;
+
+            const canvas = previewCanvasRef.current;
+            const ctx = canvas.getContext('2d');
+
+            // Crear un canvas temporal para obtener la URL de datos de la imagen final
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+
+            const img = new Image();
+            img.src = selectedImage.src; // Usar el src actual de la imagen (podría ser original o ya manipulado)
+            img.onload = () => {
+              const originalWidth = img.width;
+              const originalHeight = img.height;
+
+              // Calcular dimensiones escaladas
+              const scaledWidth = originalWidth * currentScale;
+              const scaledHeight = originalHeight * currentScale;
+
+              // Determinar las dimensiones del canvas temporal según la rotación
+              let finalCanvasWidth = scaledWidth;
+              let finalCanvasHeight = scaledHeight;
+
+              if (currentRotation === 90 || currentRotation === 270) {
+                finalCanvasWidth = scaledHeight;
+                finalCanvasHeight = scaledWidth;
+              }
+
+              tempCanvas.width = finalCanvasWidth;
+              tempCanvas.height = finalCanvasHeight;
+
+              tempCtx.clearRect(0, 0, tempCanvas.width, tempCanvas.height);
+              tempCtx.save();
+              tempCtx.translate(tempCanvas.width / 2, tempCanvas.height / 2);
+              tempCtx.rotate(currentRotation * Math.PI / 180);
+              tempCtx.drawImage(img, -scaledWidth / 2, -scaledHeight / 2, scaledWidth, scaledHeight);
+              tempCtx.restore();
+
+              // Obtener la nueva URL de datos de la imagen manipulada
+              const newDataUrl = tempCanvas.toDataURL('image/jpeg');
+
+              // Actualizar el estado de las imágenes con la nueva URL de datos, rotación y escala
+              setImages((prevImages) =>
+                prevImages.map((imgItem) =>
+                  imgItem.id === selectedImage.id
+                    ? { ...imgItem, src: newDataUrl, rotation: currentRotation, scale: currentScale }
+                    : imgItem
+                )
+              );
+              closeImagePreview(); // Cerrar el modal de vista previa
+            };
+          };
+
+          // Efecto para dibujar la imagen en el canvas de vista previa
+          React.useEffect(() => {
+            if (!selectedImage || !previewCanvasRef.current) return;
+
+            const canvas = previewCanvasRef.current;
+            const ctx = canvas.getContext('2d');
+            const img = new Image();
+            img.src = selectedImage.src; // Usar el src actual para mostrar en la vista previa
+
+            img.onload = () => {
+              // Limpiar canvas
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+              const originalWidth = img.width;
+              const originalHeight = img.height;
+
+              // Calcular dimensiones escaladas
+              const scaledWidth = originalWidth * currentScale;
+              const scaledHeight = originalHeight * currentScale;
+
+              // Determinar las dimensiones del canvas para mostrar la imagen rotada y escalada
+              let displayWidth = scaledWidth;
+              let displayHeight = scaledHeight;
+              if (currentRotation === 90 || currentRotation === 270) {
+                displayWidth = scaledHeight;
+                displayHeight = scaledWidth;
+              }
+
+              // Ajustar el tamaño del canvas para que quepa la imagen rotada y escalada
+              canvas.width = displayWidth;
+              canvas.height = displayHeight;
+
+              // Centrar la imagen en el canvas y aplicar transformaciones
+              ctx.save();
+              ctx.translate(canvas.width / 2, canvas.height / 2);
+              ctx.rotate(currentRotation * Math.PI / 180);
+              ctx.drawImage(img, -scaledWidth / 2, -scaledHeight / 2, scaledWidth, scaledHeight);
+              ctx.restore();
+            };
+          }, [selectedImage, currentRotation, currentScale]);
+
+          // Función para generar y descargar el PDF
+          const handleGeneratePdf = React.useCallback(() => {
+            if (images.length === 0) {
+              console.error('Por favor, carga al menos una imagen para generar el PDF.');
+              return;
+            }
+
+            // Asegurarse de que jsPDF esté disponible globalmente a través del estado
+            if (!isJsPdfLoaded) {
+              console.error('jsPDF aún no está listo. Por favor, espera un momento.');
+              return;
+            }
+
+            // Acceder a jsPDF desde el objeto global window, considerando ambas posibles propiedades
+            const jsPDFConstructor = window.jspdf ? window.jspdf.jsPDF : window.jsPDF;
+
+            if (!jsPDFConstructor) {
+                console.error('jsPDF no se encontró en el objeto global window.');
+                return;
+            }
+
+            const doc = new jsPDFConstructor({
+              orientation: 'portrait', // Orientación del PDF en modo vertical (portrait)
+              unit: 'pt', // Unidades (puntos)
+              format: 'letter', // Formato de página: 'letter' para tamaño carta
+            });
+
+            const imgWidth = doc.internal.pageSize.getWidth() - 40; // Ancho de la imagen (menos márgenes)
+            let yOffset = 20; // Offset inicial en el eje Y para el contenido
+
+            // Usar Promise.all para asegurar que todas las imágenes se procesen antes de guardar el PDF
+            const imagePromises = images.map((image, index) => {
+              return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.src = image.src; // Usar el src de la imagen (que ya puede estar manipulado)
+
+                img.onload = () => {
+                  // Calcular la altura proporcional para mantener la relación de aspecto original
+                  // y asegurar que la imagen no se distorsione ni se recorte.
+                  // La imagen se escalará para ajustarse al ancho de la página,
+                  // y si es demasiado alta, se moverá a una nueva página.
+                  const imgHeight = (img.height * imgWidth) / img.width;
+
+                  // Si la imagen no cabe en la página actual, añadir una nueva página
+                  // Esto asegura que las imágenes se coloquen verticalmente, una debajo de la otra.
+                  if (yOffset + imgHeight + 20 > doc.internal.pageSize.getHeight() && index > 0) {
+                    doc.addPage();
+                    yOffset = 20; // Resetear el offset para la nueva página
+                  }
+
+                  // Añadir la imagen al PDF. La orientación 'portrait' del documento
+                  // y el cálculo de yOffset aseguran un flujo vertical de las imágenes
+                  // sin distorsionar su relación de aspecto. La imagen se escalará para
+                  // ajustarse al ancho de la página manteniendo su proporción.
+                  doc.addImage(img.src, 'JPEG', 20, yOffset, imgWidth, imgHeight);
+                  yOffset += imgHeight + 10; // Espacio entre imágenes
+                  resolve();
+                };
+                img.onerror = () => {
+                  console.error(`Error al cargar la imagen: ${image.name}`);
+                  resolve(); // Resolver incluso si hay un error para no detener el proceso
+                };
+              });
+            });
+
+            // Esperar a que todas las promesas de imágenes se resuelvan antes de guardar el PDF
+            Promise.all(imagePromises).then(() => {
+              doc.save('imagenes_organizadas.pdf'); // Guardar el PDF con un nombre de archivo
+            });
+
+          }, [images, isJsPdfLoaded]); // Regenerar la función solo si las imágenes o el estado de carga de jsPDF cambian
+
+          // Efecto para limpiar URLs de objetos cuando las imágenes se eliminan
+          React.useEffect(() => {
+            return () => {
+              images.forEach(image => URL.revokeObjectURL(image.id));
+            };
+          }, [images]);
+
+          // Renderizado del componente
+          return (
+            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4 font-inter text-gray-800">
+              <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-2xl p-8">
+                <h1 className="text-4xl font-extrabold text-center text-indigo-700 mb-8">
+                  Organizador de Imágenes a PDF
+                </h1>
+
+                {/* Sección de carga de imágenes */}
+                <div className="mb-8 p-6 border-2 border-dashed border-indigo-300 rounded-lg text-center bg-indigo-50 hover:border-indigo-500 transition-all duration-300">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleImageUpload}
+                    className="hidden"
+                    ref={fileInputRef}
+                  />
+                  <button
+                    onClick={() => fileInputRef.current.click()}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transform hover:scale-105 transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-indigo-300"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-6 w-6 inline-block mr-2"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v7"
+                      />
+                    </svg>
+                    Cargar Imágenes
+                  </button>
+                  <p className="mt-4 text-gray-600">Arrastra y suelta imágenes aquí o haz clic para seleccionarlas.</p>
+                </div>
+
+                {/* Botones de acción */}
+                <div className="flex flex-col sm:flex-row justify-center gap-4 mb-8">
+                  <button
+                    onClick={handleSortAutomatically}
+                    disabled={images.length === 0}
+                    className="flex-1 bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-full shadow-lg transform hover:scale-105 transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-green-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-6 w-6 inline-block mr-2"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M3 4h13M3 8h9m-9 4h6m4 0l4-4m0 0l4 4m-4-4v12"
+                      />
+                    </svg>
+                    Ordenar Automáticamente
+                  </button>
+                  <button
+                    onClick={handleGeneratePdf}
+                    disabled={images.length === 0 || !isJsPdfLoaded}
+                    className="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-6 rounded-full shadow-lg transform hover:scale-105 transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-purple-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      className="h-6 w-6 inline-block mr-2"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
+                      />
+                    </svg>
+                    Descargar PDF
+                    {!isJsPdfLoaded && <span className="ml-2">(Cargando PDF...)</span>}
+                  </button>
+                </div>
+
+                {/* Galería de imágenes cargadas */}
+                {images.length > 0 && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6 p-4 border border-gray-200 rounded-lg bg-gray-50">
+                    {images.map((image, index) => (
+                      <div
+                        key={image.id}
+                        draggable
+                        onDragStart={() => handleDragStart(index)}
+                        onDragEnter={() => handleDragEnter(index)}
+                        onDragOver={(e) => e.preventDefault()} // Necesario para permitir el drop
+                        onDragEnd={handleDragEnd}
+                        className={`relative group bg-white rounded-lg shadow-md overflow-hidden cursor-grab transform transition-all duration-200 hover:scale-105
+                          ${draggingIndex === index ? 'opacity-50 border-4 border-indigo-500' : ''}`}
+                      >
+                        <img
+                          src={image.src}
+                          alt={image.name}
+                          className="w-full h-32 object-cover rounded-t-lg cursor-pointer"
+                          onClick={() => openImagePreview(image)} // Abrir vista previa al hacer clic
+                        />
+                        <div className="p-2 text-sm text-center truncate bg-gray-100">
+                          {image.name}
+                        </div>
+                        <button
+                          onClick={() => handleRemoveImage(image.id)}
+                          className="absolute top-2 right-2 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+                          title="Eliminar imagen"
+                        >
+                          <svg
+                            xmlns="http://www.w3.org/2000/svg"
+                            className="h-4 w-4"
+                            fill="none"
+                            viewBox="0 0 24 24"
+                            stroke="currentColor"
+                          >
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth={2}
+                              d="M6 18L18 6M6 6l12 12"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {images.length === 0 && (
+                  <p className="text-center text-gray-500 text-lg mt-10">
+                    ¡Carga tus imágenes para empezar a organizarlas!
+                  </p>
+                )}
+              </div>
+
+              {/* Modal de Vista Previa de Imagen */}
+              {selectedImage && (
+                <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+                  <div className="bg-white rounded-xl shadow-2xl p-6 max-w-3xl w-full">
+                    <h2 className="text-2xl font-bold text-indigo-700 mb-4">Editar Imagen</h2>
+                    <div className="flex justify-center items-center mb-4 bg-gray-100 rounded-lg p-2">
+                      <canvas ref={previewCanvasRef} className="max-w-full max-h-[60vh] border border-gray-300 rounded-md"></canvas>
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-4 mb-6">
+                      <button
+                        onClick={() => setCurrentRotation((prev) => (prev + 90) % 360)}
+                        className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition-all duration-200"
+                      >
+                        Girar 90°
+                      </button>
+                      <button
+                        onClick={() => setCurrentScale((prev) => Math.max(0.1, prev - 0.1))}
+                        className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition-all duration-200"
+                      >
+                        Reducir
+                      </button>
+                      <button
+                        onClick={() => setCurrentScale((prev) => Math.min(1.0, prev + 0.1))}
+                        className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded-full shadow-md transition-all duration-200"
+                      >
+                        Aumentar
+                      </button>
+                    </div>
+                    <div className="flex justify-end gap-4">
+                      <button
+                        onClick={applyImageChanges}
+                        className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-5 rounded-full shadow-lg transition-all duration-300"
+                      >
+                        Aplicar Cambios
+                      </button>
+                      <button
+                        onClick={closeImagePreview}
+                        className="bg-gray-400 hover:bg-gray-500 text-white font-bold py-2 px-5 rounded-full shadow-lg transition-all duration-300"
+                      >
+                        Cerrar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+
+        // Montar la aplicación React en el div 'root'
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
